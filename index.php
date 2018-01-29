@@ -1,162 +1,174 @@
 <?php
 
-function encode_resource_url($path) {
-	global $data_url;
-	if (substr($path, 0, 4) != 'http') {
-		$need = "$data_url[scheme]://$data_url[host]";
-	} else {
-		$need = '';
-	}
-	return "$_SERVER[REQUEST_SCHEME]://$_SERVER[HTTP_HOST]$_SERVER[SCRIPT_NAME]?url=".base64_encode($need.$path);
+// Функция отладки
+function debug_show($data) {
+	echo '<pre style="background: #272822; color: #FFF; padding: 10px; font-size: 15px; word-wrap: break-word;">';
+	var_dump($data);
+	echo '</pre>';
+	exit;
 }
 
-function fix_css($url) {
-	$url = trim($url);
-    $delim = strpos($url, '"') === 0 ? '"' : (strpos($url, "'") === 0 ? "'" : '');
-    return $delim.preg_replace('#([\(\),\s\'"\\\])#', '\\$1', encode_resource_url(trim(preg_replace('#\\\(.)#', '$1', trim($url, $delim))))).$delim;
+function parse_cookie($cookie) {
+	list($data, $expire, $path) = explode('; ', $cookie);
+	list($name, $value) = explode('=', $data);
+	return [
+		'name' => $name,
+		'value' => $value,
+	];
 }
 
-$data_url = parse_url(base64_decode($_GET['url']));
+$rn = "\r\n";
 
-if (!$data_url['host']) {
-	exit('URL указан неверно');
-}
+$_URL['domain'] = '.site.com'; // Ваш домен (точку в начале не удалять)
+$part = explode('.', str_replace($_URL['domain'], '', $_SERVER['HTTP_HOST']));
+$scheme = $part[0];
+unset($part[0]);
+$reverse = array_reverse($part);
 
-if (!$data_url['path']) {
-	$data_url['path'] = '/';
-}
+// Порты
+$port = [
+	'tcp' => 80,
+	'ssl' => 443,
+];
 
-if ($data_url['query']) {
-	$data_url['query'] = "?$data_url[query]";
-} else {
-	$data_url['query'] = '';
-}
+// Параметры
+$_URL = [
+	'domain' => $_URL['domain'],
+	'scheme' => $scheme,
+	'port' => $port[$scheme],
+	'host' => implode('.', $part),
+	'query' => $_SERVER['REQUEST_URI'],
+	'web' => $reverse[1].'.'.$reverse[0],
+];
 
-if ($data_url['scheme'] == 'http') {
-	$fp = fsockopen("tcp://$data_url[host]", 80);
-} else {
-	$fp = fsockopen("ssl://$data_url[host]", 443);
-}
+$fp = fsockopen($_URL['scheme'].'://'.$_URL['host'], $_URL['port']);
 
 if (!$fp) {
-	exit('Сервер не отвечает');
+   exit('Сервер не отвечает');
 }
 
-$out = "$_SERVER[REQUEST_METHOD] $data_url[path]$data_url[query] $_SERVER[SERVER_PROTOCOL]\r\n";
-$out .= "Host: $data_url[host]\r\n";
-$out .= "User-Agent: $_SERVER[HTTP_USER_AGENT]\r\n";
-$out .= "Accept: $_SERVER[HTTP_ACCEPT]\r\n";
+$out = $_SERVER['REQUEST_METHOD'].' '.$_URL['query'].' '.$_SERVER['SERVER_PROTOCOL'].$rn;
+$out .= 'Host: '.$_URL['host'].$rn;
+//$out .= 'User-Agent: '.$_SERVER['HTTP_USER_AGENT'].$rn;
+$out .= 'User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_6) AppleWebKit/603.3.8 (KHTML, like Gecko) Version/10.1.2 Safari/603.3.8'.$rn;
+$out .= 'Accept: '.$_SERVER['HTTP_ACCEPT'].$rn;
 
+// Установка куки (если есть)
 if ($_COOKIE) {
-	$out .= sprintf('Cookie: %s', http_build_query($_COOKIE, null, '; '))."\r\n";
+	$out .= sprintf('Cookie: %s', http_build_query($_COOKIE, null, '; ')).$rn;
 }
 
 if ($_SERVER['REQUEST_METHOD'] == 'POST') {
+	// Обработка HTML формы с файлами
 	if ($_FILES) {
 		$boundary = '----'.md5(time());
-
 		foreach ($_POST as $key => $value) {
-			$post .= "--{$boundary}\r\n";
-			$post .= "Content-Disposition: form-data; name=\"$key\"\r\n\r\n";
-			$post .= urldecode($value)."\r\n";
+			$post .= '--{$boundary}'.$rn;
+			$post .= 'Content-Disposition: form-data; name='.$key.$rn.$rn;
+			$post .= urldecode($value).$rn;
 		}
-
 		foreach ($_FILES as $key => $file_info) {
-			$post .= "--{$boundary}\r\n";
-			$post .= "Content-Disposition: form-data; name=\"$key\"; filename=\"{$file_info['name']}\"\r\n";
-			$post .= 'Content-Type: '.(empty($file_info['type']) ? 'application/octet-stream' : $file_info['type']) . "\r\n\r\n";
+			$post .= '--{$boundary}'.$rn;
+			$post .= 'Content-Disposition: form-data; name="'.$key.'"; filename="{'.$file_info['name'].'}'.$rn;
+			$post .= 'Content-Type: '.(empty($file_info['type']) ? 'application/octet-stream' : $file_info['type']).$rn.$rn;
 			if (is_readable($file_info['tmp_name'])) {
 				$handle = fopen($file_info['tmp_name'], 'rb');
 				$post .= fread($handle, filesize($file_info['tmp_name']));
 				fclose($handle);
 			}
-			$post .= "\r\n";
+			$post .= $rn;
 		}
-
-		$post .= "--{$boundary}--\r\n";
-		$out .= "Content-Type: multipart/form-data; boundary={$boundary}\r\n";
-	} else {
-		$post = http_build_query($_POST);
-		$out .= "Content-Type: application/x-www-form-urlencoded\r\n";
+		$post .= '--{$boundary}--'.$rn;
+		$out .= 'Content-Type: multipart/form-data; boundary={$boundary}'.$rn;
 	}
-
-	$out .= "Content-Length: ".strlen($post)."\r\n";
-	$out .= "Connection: Close\r\n\r\n";
+	else {
+		// Обработка обычной HTML формы
+		$post = http_build_query($_POST);
+		$out .= 'Content-Type: application/x-www-form-urlencoded'.$rn;
+	}
+	$out .= 'Content-Length: '.strlen($post).$rn;
+	$out .= 'Connection: Close'.$rn.$rn;
 	$out .= $post;
 }
-
-
 else {
-	$out .= "Connection: Close\r\n\r\n";
+	$out .= 'Connection: Close'.$rn.$rn;
 }
+
 
 fwrite($fp, $out);
 
 while (!feof($fp)) {
-	$body .= fgets($fp, 128);
+	$response .= fgets($fp, 128);
 }
 
 fclose($fp);
+list($_HEADER, $_BODY) = explode($rn.$rn, $response);
 
-list($header, $body) = explode("\r\n\r\n", $body);
-$header = http_parse_headers($header);
-list($content_type, $content_charset) = explode('; ', $header['Content-Type']);
-
-foreach ($header as $key => $val) {
-
-	if ($key == 'Set-Cookie' and $header[$key]) {
-		if (is_array($header[$key])) {
-			foreach ($header[$key] as $cookie) {
-				$cookie = http_parse_cookie($cookie);
-				$key = key($cookie->cookies);
-				setcookie($key, $cookie->cookies[$key], $cookie->expire, $cookie->path, $_SERVER['SERVER_NAME']);
-			}
-		}
-	}
-
-	else if ($key == 'Location') {
-		header("$key: ".encode_resource_url($val));
-	}
-
-	else {
-		header("$key: $val");
-	}
-
-}
-
-if ($content_type == 'text/html') {
-	// Обработка HTML
-	libxml_use_internal_errors(true);
-	$html = new DOMDocument();
-	$html->loadHTML($body);
-	$html_resource = array(
-		'img' => 'src',
-		'input' => 'src',
-		'script' => 'src',
-		'link' => 'href',
-		'a' => 'href',
-		'form' => 'action',
-	);
-
-	foreach ($html_resource as $tag => $attribute) {
-		foreach ($html->getElementsByTagName($tag) as $element) {
-			if ($element->hasAttribute($attribute)) {
-				$element->setAttribute($attribute, encode_resource_url($element->getAttribute($attribute)));
-			}
-		}
-	}
-
-	$body = $html->saveHTML();
-	$body = str_replace(',location.replace(location.toString())', '', $body);
-}
-
-
-else if ($content_type == 'text/css') {
-	// Обработка CSS
-	preg_match_all('#url\s*\(\s*(([^)]*(\\\))*[^)]*)(\)|$)?#i', $body, $matches, PREG_SET_ORDER);
-    for ($i = 0, $count = count($matches); $i < $count; ++$i) {
-        $body = str_replace($matches[$i][0], 'url('.fix_css($matches[$i][1]).')', $body);
+// Преобразование заголовков в массив
+$exp = explode("\n", str_replace("\r", '', $_HEADER));
+unset($exp[0]);
+foreach ($exp as $val) {
+	list($name, $data) = explode(': ', $val);
+	if ($result[$name]) {
+		if (!is_array($result[$name])) {
+    		$cur = $result[$name];
+    		$result[$name] = [];
+    		$result[$name][] = $cur;
+    	}
+    	$result[$name][] = $data;
+    }
+    else {
+    	$result[$name] = $data;
     }
 }
+$_HEADER = $result;
 
-echo $body;
+unset($_HEADER['Content-Security-Policy'], $_HEADER['Content-Security-Policy-Report-Only']);
+// Установка заголовков
+foreach ($_HEADER as $key => $val) {
+	// Обработка куки
+	if (strtolower($key) == 'set-cookie' and $_HEADER[$key]) {
+		if (is_array($_HEADER[$key])) {
+			foreach ($_HEADER[$key] as $cookie) {
+				$cookie = parse_cookie($cookie);
+				setcookie($cookie['name'], $cookie['value'], strtotime('+365 days'), '/', $_URL['web'].$_URL['domain']);
+			}
+		}
+		else {
+			$cookie = parse_cookie($_HEADER[$key]);
+			setcookie($cookie['name'], $cookie['value'], strtotime('+365 days'), '/', $_URL['web'].$_URL['domain']);
+		}
+	}
+	// Обработка редиректа
+	elseif (strtolower($key) == 'location') {
+		if (substr($val, 0, 2) == '//') {
+			$val = 'http:'.$val;
+		}
+		$url = parse_url($val);
+		if (!$url['scheme']) {
+			$location = $val;
+		}
+		else {
+			if ($url['query']) {
+				$url['query'] = '?'.$url['query'];
+			}
+			else {
+				$url['query'] = '';
+			}
+			$location = 'http://'.str_replace(['https', 'http'], ['ssl', 'tcp'], $url['scheme']).'.'.$url['host'].$_URL['domain'].$url['path'].$url['query'];
+		}
+		$location = str_replace('1.vk.com', 'ssl.m.vk.com', $location);
+		header($key.': '.$location);
+	}
+	else {
+		header($key.': '.$val);
+	}
+}
+
+// Правка HTML кода
+$fix = 'fix/'.$_URL['web'].'.php';
+if (file_exists($fix)) {
+	require $fix;
+}
+
+echo $_BODY;
